@@ -6,54 +6,52 @@ description: >-
   number two…”, when the user asks sessions to talk to each other, or when a participant needs to
   send, route, inspect, watch, drive, or close a serialized agent2agent turn. Supports read-only
   2–3 minute monitoring, a background-watch doorbell that wakes a live session on its turn, and
-  explicitly authorized hands-free turn commands. Reuses relay-system files and NEXT: routing; it
-  is not the Producer/Reviewer artifact-review relay.
+  explicitly authorized hands-free turn commands. Stores one canonical conversation outside Git
+  while retaining legacy relay-system lookup and NEXT: routing; it is not the Producer/Reviewer
+  artifact-review relay.
 ---
 
 # Agent2Agent
 
 Use the bundled `scripts/agent2agent.py` for every state change. It keeps a stable `agent1` through
-`agentN` roster, one active `NEXT:` writer, and a durable discussion under `relay-system/<date>/`.
+`agentN` roster, one active `NEXT:` writer, and one durable `conversation.md` outside the Git
+working tree. By default the store is `Agent2Agent-Transcripts/` beside the canonical repository;
+`--store`, `AGENT2AGENT_HOME`, or the user config file may override it. Never place the store
+inside the coordinated repository. Existing repository-local `relay-system/<date>/` discussions
+remain discoverable and are advanced in place without copying.
+
 Run commands from the intended XYZ clone; each example resolves the helper from that clone's Git
 root so installed skill symlinks and paths containing spaces remain safe.
 
 ## Start
 
-**Agent 1 owns the handoff packet. Never ask the user to copy, paste, restate, or manually package
-context that is already available in the conversation or workspace.** Infer a concise subject and
-default to two participants unless the user requests more. Before calling `start`, inspect the
-relevant repository state and prepare a self-contained packet that lets every receiving agent
-contribute without asking the user to repeat the task.
+Agent 1 is the producer of the handoff, not a courier. Before starting, skim the recent human-agent
+conversation and the relevant local evidence. Infer the discussion goal, scope, questions, and done
+condition when they are clear. When the intended outcome cannot be inferred safely, ask the human
+one focused clarification at a time and do not start until the packet can be completed without
+inventing consequential scope. Default to two participants unless the user requests more.
 
-The packet must contain these headings exactly once, in this order, with useful content under each:
+Prepare a UTF-8 Markdown packet with exactly these headings, in this order, and useful content under
+each one:
 
-```markdown
-## Objective
-What the discussion must accomplish and why it matters.
+1. `## Goal`
+2. `## Scope`
+3. `## Context and current state`
+4. `## Evidence and artifacts`
+5. `## Constraints and safety boundaries`
+6. `## Questions for participants`
+7. `## Requested outcome / done condition`
 
-## Context and current state
-The user's request, decisions already made, work completed, and the present state.
-
-## Evidence and artifacts
-Relevant paths, diffs, commits, issues, test results, errors, or commands already run.
-
-## Constraints
-Scope, safety rules, compatibility requirements, unresolved assumptions, and explicit boundaries.
-
-## Requested outcome
-The specific review, answer, decision, or next action expected from the receiving agents.
-```
-
-Write the packet to a temporary UTF-8 file yourself. Do not hand packet assembly back to the user.
-Exclude secrets and irrelevant transcript. If one genuinely necessary fact cannot be inferred or
-inspected, ask one focused clarification; otherwise proceed. The helper rejects missing, duplicate,
-out-of-order, or empty packet sections, so a subject-only handoff cannot start.
+Include the material the invited agents need to answer without asking the human to copy and paste a
+second block. Prefer concise synthesis plus repo-relative paths, issue/PR links, commands, and
+observed results. Do not put secrets, credentials, or unrelated conversation into the packet. Write
+it to a temporary file and pass that file to `start`; the helper validates and embeds it as Turn 1.
 
 ```bash
 "$(git rev-parse --show-toplevel)/skills/agent2agent/scripts/agent2agent.py" start \
   --subject "subject line here" \
-  --agents 2 \
-  --packet-file /safe/path/to/prepared-agent2agent-packet.md
+  --packet-file /safe/path/to/context-packet.md \
+  --agents 2
 ```
 
 When the user asks for a 2-minute / 30-minute doorbell, include `--timed-watch`. It persists on
@@ -67,12 +65,16 @@ Join XYZ agent2agent #123456 as agent number two to discuss: "subject line here"
 Timed two-minute doorbell requested: when waiting, start a background watch that checks every 120 seconds for 1,800 seconds.
 ```
 
-Return only the helper's compact invitation lines and a brief confirmation that the prepared packet
-is already stored in Turn 1. The user pastes only the invitation, never the context packet. For a
-roster larger than two, the helper prints one invitation for every seat from `agent2` through
-`agentN`. Every seat reads the same Turn 1 packet. `agent2` owns the live turn; later seats may join
+Return only the compact invitations printed by the helper; do not append a separate “context to
+paste” block. Turn 1 already contains the prepared packet as `agent1`. For a roster larger than two,
+the helper prints one invitation
+for every seat from `agent2` through `agentN`. `agent2` owns the live turn; later seats may join
 immediately, receive `DECISION: wait`, and arm a doorbell without changing the serialized `NEXT:`
 owner.
+
+The generated `conversation.md` is both the live canvas and raw transcript. Do not create a second
+summary canvas or ask the user to relay its contents. Runtime locks and watch markers live under the
+session's `runtime/` directory and are not transcript content.
 
 ## Inspect status
 
@@ -100,9 +102,8 @@ Do not create a second file. Resolve and validate the existing discussion read-o
   --expect-subject "subject line here"
 ```
 
-- `DECISION: take-turn`: read the returned relay file—including the prepared packet in Turn 1—then
-  formulate a useful response and use `send` or `close`. Never ask the user to paste the packet
-  again.
+- `DECISION: take-turn`: read the returned relay file, formulate a useful response to the whole
+  discussion—including the prepared packet in Turn 1—then use `send` or `close`.
 - `DECISION: wait`: do not write. Tell the user which participant owns `NEXT:`.
 - `DECISION: closed`: do not write. Report that the discussion is complete.
 

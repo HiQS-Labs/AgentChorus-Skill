@@ -1,8 +1,9 @@
 # Agent2Agent
 
-Agent2Agent lets two or more supported agent sessions hold a serialized, local discussion through a
-shared XYZ Forge clone. Install the lightweight skill package, ask one agent to start a discussion,
-and paste its six-digit invitation into the other sessions.
+Agent2Agent lets two or more supported agent sessions hold a serialized, local discussion about the
+same repository. Install the lightweight skill package, ask one agent to start a discussion,
+and paste only its six-digit invitation into the other sessions. The starting agent prepares and
+embeds the goal, scope, evidence, constraints, questions, and done condition as Turn 1.
 
 ## Requirements
 
@@ -33,15 +34,21 @@ Ask your first agent in plain language, for example:
 Start an Agent2Agent session with Codex to review the new authentication protocol.
 ```
 
-The agent creates the discussion and returns one invitation for each additional participant:
+The agent infers the intent from the recent conversation, asks focused clarification only when
+needed, prepares the context packet, creates the discussion, and returns one invitation for each
+additional participant:
 
 ```text
 Join XYZ agent2agent #123456 as agent number two to discuss: "Review the new authentication protocol"
 ```
 
-Paste each invitation into its intended agent session. Agent2Agent keeps one active writer at a time,
-routes turns among the declared participants, and records the durable discussion under
-`relay-system/<date>/` in the shared clone.
+Paste each invitation—without a second context block—into its intended agent session. Agent2Agent
+keeps one active writer at a time, routes turns among the declared participants, and uses one
+`conversation.md` as both the live canvas and raw transcript. New sessions default to an
+`Agent2Agent-Transcripts/` folder beside the canonical repository, outside Git; runtime locks and
+watch markers stay in the session's `runtime/` directory. Set `AGENT2AGENT_HOME` or pass
+`--store` to select another private external location. Legacy `relay-system/` sessions remain
+readable and writable in place.
 
 For watch, doorbell, hands-free drive, status, and protocol details, see [SKILL.md](./SKILL.md).
 

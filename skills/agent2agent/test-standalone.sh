@@ -40,6 +40,8 @@ esac
 trap 'rm -rf "$WORK"' EXIT
 ROOT="$WORK/root"
 mkdir -p "$ROOT"
+STORE="$WORK/Agent2Agent-Transcripts"
+export AGENT2AGENT_HOME="$STORE"
 
 PASS=0
 FAIL=0
@@ -49,22 +51,57 @@ expect_contains() {
   _label="$1"; _text="$2"; _needle="$3"
   case "$_text" in *"$_needle"*) pass "$_label" ;; *) fail "$_label (missing: $_needle)" ;; esac
 }
+expect_file_contains() {
+  _label="$1"; _file="$2"; _needle="$3"
+  grep -Fq -- "$_needle" "$_file" && pass "$_label" || fail "$_label (missing: $_needle)"
+}
 fingerprint() { cksum "$1" | awk '{print $1 ":" $2}'; }
 # F1: a relay-file-only fingerprint misses sibling artifacts (lock files, watch sidecars)
 # agent2agent.py may create or rewrite around a call that claims to "mutate nothing" —
 # notably, even a REJECTED out-of-turn send opens (and so creates, if absent) the lock
 # dotfile before it checks turn ownership. Fingerprint the whole tree, not just one file.
-tree_fp() { find "$ROOT" -type f -exec cksum {} + 2>/dev/null | sort | cksum; }
+tree_fp() { find "$ROOT" "$STORE" -type f -exec cksum {} + 2>/dev/null | sort | cksum; }
 run() { python3 "$CLI" --root "$ROOT" "$@"; }
 
 echo "agent2agent standalone smoke suite (no tick, no relay-automation, no repo test harness):"
+
+PACKET="$WORK/context-packet.md"
+cat > "$PACKET" <<'EOF'
+## Goal
+Validate the standalone Agent2Agent package.
+## Scope
+The dependency-free smoke suite.
+## Context and current state
+The producer prepared this packet before starting.
+## Evidence and artifacts
+The generated discussion and command output.
+## Constraints and safety boundaries
+Operate only inside the temporary fixture root.
+## Questions for participants
+Does the package preserve its documented contract?
+## Requested outcome / done condition
+Every smoke assertion passes.
+EOF
 
 # --- 1. The script runs on its own, no repo context required ---
 run --help >/dev/null 2>&1
 [ $? -eq 0 ] && pass "--help executes standalone" || fail "--help failed to execute"
 
-# --- 2. start: a 3-agent discussion, deterministic ID via env override ---
-start_out="$(AGENT2AGENT_ID_SEQUENCE=222222 run start --subject "standalone smoke" --agents 3 2>&1)"
+# --- 2. start: context is mandatory; then create a 3-agent discussion deterministically ---
+missing_packet_out="$(run start --subject "missing packet" 2>&1)"
+[ "$?" -ne 0 ] && pass "start rejects subject-only initialization" \
+  || fail "start accepted a missing context packet"
+expect_contains "missing packet refusal names the required argument" "$missing_packet_out" "--packet-file"
+
+BAD_PACKET="$WORK/incomplete-packet.md"
+printf '%s\n' '## Goal' 'Not a complete packet.' > "$BAD_PACKET"
+bad_packet_out="$(run start --subject "incomplete packet" --packet-file "$BAD_PACKET" 2>&1)"
+[ "$?" -ne 0 ] && pass "start rejects an incomplete context packet" \
+  || fail "start accepted an incomplete context packet"
+expect_contains "incomplete packet refusal names the missing section" "$bad_packet_out" "## Scope"
+
+start_out="$(AGENT2AGENT_ID_SEQUENCE=222222 run start --subject "standalone smoke" \
+  --packet-file "$PACKET" --agents 3 2>&1)"
 start_rc=$?
 [ "$start_rc" -eq 0 ] && pass "start creates a discussion" || fail "start exits $start_rc: $start_out"
 expect_contains "start prints the agent2 invitation" "$start_out" \
@@ -74,13 +111,13 @@ expect_contains "start prints the agent3 invitation" "$start_out" \
 
 # F6: an unguarded `find` assigns a multi-line match list to $relay_file if two files
 # ever collide, and every downstream -f/fingerprint use then degrades silently. Count first.
-relay_matches="$(find "$ROOT/relay-system" -type f -name '222222-*.md' -print)"
+relay_matches="$(find "$STORE/repositories" -type f -path '*/222222--*/conversation.md' -print)"
 relay_count="$(printf '%s\n' "$relay_matches" | grep -c .)"
 [ "$relay_count" -eq 1 ] && pass "exactly one relay file exists for #222222" \
   || fail "expected exactly 1 relay file, found $relay_count: $relay_matches"
 relay_file="$relay_matches"
-[ -f "$relay_file" ] && pass "relay file exists under root/relay-system/<date>/" \
-  || fail "relay file missing under $ROOT/relay-system"
+[ -f "$relay_file" ] && pass "conversation exists under the external dated store" \
+  || fail "conversation missing under $STORE"
 
 # --- 3. status: read-only, mutates nothing anywhere under root (not just the relay file) ---
 before_status="$(tree_fp)"
@@ -95,6 +132,9 @@ expect_contains "status reports NEXT" "$status_out" "NEXT: agent2"
 join2_out="$(run join --id 222222 --agent 2 --expect-subject "standalone smoke" 2>&1)"
 [ $? -eq 0 ] && pass "join succeeds for the current owner" || fail "join failed: $join2_out"
 expect_contains "join reports take-turn for the owner" "$join2_out" "DECISION: take-turn"
+expect_contains "join directs the participant to Turn 1 context" "$join2_out" \
+  "CONTEXT: read the prepared packet in Turn 1 before responding"
+expect_file_contains "Turn 1 embeds the producer's goal" "$relay_file" "## Goal"
 
 join3_out="$(run join --id 222222 --agent 3 2>&1)"
 expect_contains "join reports wait for a non-owner" "$join3_out" "DECISION: wait"
@@ -123,9 +163,9 @@ expect_contains "out-of-turn refusal names the turn-order cause" "$early_out" "o
 [ "$before_send_tree" != "$(tree_fp)" ] \
   && pass "rejected send's lock-file side effect is visible to a tree-wide fingerprint" \
   || fail "expected the known lock-dotfile side effect but the tree was unchanged (implementation may have changed)"
-[ -e "$(dirname "$relay_file")/.$(basename "$relay_file").lock" ] \
-  && pass "the specific side effect is the documented lock dotfile" \
-  || fail "tree changed but not via the expected .<relay>.lock dotfile"
+[ -e "$(dirname "$relay_file")/runtime/discussion.lock" ] \
+  && pass "the specific side effect is the runtime discussion lock" \
+  || fail "tree changed but not via runtime/discussion.lock"
 
 send_out="$(run send --id 222222 --agent 2 --next-agent 3 --message "handing to agent3" 2>&1)"
 [ $? -eq 0 ] && pass "send records a turn and hands off" || fail "send failed: $send_out"
@@ -172,10 +212,9 @@ restore_out="$(run send --id 222222 --agent 2 --next-agent 3 --message "restore 
 #         "pid=<n> held-since=<ts>" convention if that payload ever becomes structured.
 #         Readiness is signaled via a separate sentinel file instead. ---
 before_lock="$(tree_fp)"
-lock_dir="$(dirname "$relay_file")"; lock_base="$(basename "$relay_file")"
 sentinel="$WORK/lock-held.sentinel"
 rm -f "$sentinel"
-python3 - "$lock_dir/.$lock_base.lock" "$sentinel" <<'PYEOF' >/dev/null 2>&1 &
+python3 - "$(dirname "$relay_file")/runtime/discussion.lock" "$sentinel" <<'PYEOF' >/dev/null 2>&1 &
 import fcntl, sys, time
 lock_path, sentinel_path = sys.argv[1], sys.argv[2]
 fh = open(lock_path, "a+")

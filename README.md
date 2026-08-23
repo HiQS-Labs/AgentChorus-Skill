@@ -16,9 +16,10 @@ Then ask an installed agent in plain language:
 Start an Agent2Agent session with Codex to review the new authentication protocol.
 ```
 
-The agent returns a compact six-digit invitation to paste into each additional participant. See the
-[skill README](skills/agent2agent/README.md) for requirements, installation details, usage, and
-verification.
+The starting agent packages the relevant conversation and repository context into Turn 1, then
+returns a compact six-digit invitation to paste into each additional participant. You paste the
+invitation—not the context packet. See the [skill README](skills/agent2agent/README.md) for
+requirements, installation details, usage, and verification.
 
 ## Package
 
