@@ -20,6 +20,14 @@ working tree. By default the store is `Agent2Agent-Transcripts/` beside the cano
 inside the coordinated repository. Existing repository-local `relay-system/<date>/` discussions
 remain discoverable and are advanced in place without copying.
 
+When the operator wants one durable store across repositories whose parents differ, persist it
+instead of repeating a machine path in every command:
+
+```bash
+"$(git rev-parse --show-toplevel)/skills/agent2agent/scripts/agent2agent.py" configure-store \
+  --path /private/path/to/Agent2Agent-Transcripts
+```
+
 Run commands from the intended XYZ clone; each example resolves the helper from that clone's Git
 root so installed skill symlinks and paths containing spaces remain safe.
 
@@ -255,14 +263,64 @@ To stream a message through stdin without interpolating its contents into the co
 Return the helper's final invitation line verbatim. The user can paste it into that participant's
 session; the same shape works for agent one, three, four, and beyond.
 
+Never report an asynchronous or remote action as complete merely because it started. Wait for the
+command to exit successfully, verify the observable result, and put the receipt in the turn—for
+example, the remote commit SHA, completed CI URL, or migration status. When a turn claims a clean,
+pushed Git handoff, add `--check-clean`; the helper refuses the handoff unless the working tree is
+clean, the branch has an upstream, and local `HEAD` exactly matches it:
+
+```bash
+"$(git rev-parse --show-toplevel)/skills/agent2agent/scripts/agent2agent.py" send \
+  --id 123456 --agent 2 --next-agent 1 --check-clean \
+  --message-file /safe/path/to/verified-handoff.md
+```
+
+## Extend scope
+
+If the operator adds a material question after the session starts, do not improvise an ordinary
+turn or close against the superseded done condition. The current `NEXT:` owner records the question,
+the replacement done condition, and the participant who should answer next:
+
+```bash
+"$(git rev-parse --show-toplevel)/skills/agent2agent/scripts/agent2agent.py" extend \
+  --id 123456 --agent 2 --next-agent 1 \
+  --question "What if the canonical artifact is retired entirely?" \
+  --done-condition "Compare retirement with migration and recommend one."
+```
+
+The helper appends a numbered `Scope Extension — Operator Follow-Up`, updates `EXTENSIONS:`, and
+routes the turn atomically. Every participant must treat the newest extension's done condition as
+the live close criterion.
+
+## Heartbeats during long work
+
+While the current turn owner is running a long test, build, or review, it may refresh its runtime
+heartbeat without adding a transcript turn:
+
+```bash
+"$(git rev-parse --show-toplevel)/skills/agent2agent/scripts/agent2agent.py" ping \
+  --id 123456 --agent 2
+```
+
+An aged heartbeat for the active `NEXT:` owner is reported as `ACTIVE`, not `STALE`. Only inactive
+waiting seats can become stale. The default threshold is 1,800 seconds; change it per command with
+`--stale-after` or for a process environment with `AGENT2AGENT_STALE_AFTER`.
+
 To end instead of hand off:
 
 ```bash
 "$(git rev-parse --show-toplevel)/skills/agent2agent/scripts/agent2agent.py" close \
   --id 123456 \
   --agent 2 \
-  --message "Final consensus and decision."
+  --message-file /safe/path/to/final-consensus.md
 ```
+
+Use `close --print-template` to obtain the required scaffold. A substantive close requires, in
+order, `## Final Consensus & Recommendation` and non-empty `### Decision`, `### Key Invariants &
+Rationale`, `### Recorded Dissent / Falsifiers`, and `### Recommended Next Actions` sections.
+`--trivial` is the explicit escape for administrative cancellation or another genuinely trivial
+termination; do not use it to bypass synthesis of a multi-turn decision. `--check-clean` is also
+available on `close` and `extend` when their messages make a verified Git handoff claim.
 
 ## Guardrails
 
@@ -319,8 +377,9 @@ To end instead of hand off:
   repeated lock failures to the user.
 - `join` and `send` report each peer's doorbell age (`peer doorbell (agent2): armed 41s ago`) when
   that seat has ever armed one. Silence about a seat means it never armed a doorbell — normal for a
-  manual participant. A line marked `STALE` means that seat may no longer be listening; say so
-  rather than assuming the peer is merely slow.
+  manual participant. An aged active owner is `ACTIVE`; a line marked `STALE` applies only to an
+  inactive seat that may no longer be listening. Use `ping` during legitimate long work rather than
+  raising the threshold indefinitely.
 - Keep turns serialized. This skill does not provide parallel writes, broadcasts, voting, or
   cross-machine transport.
 - Pass `--root /path/to/harness` or set `AGENT2AGENT_ROOT` only when the discussion lives in a

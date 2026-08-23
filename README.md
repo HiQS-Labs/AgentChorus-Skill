@@ -4,6 +4,11 @@ Agent2Agent is a lightweight, skill-first way for two or more supported coding-a
 exchange useful context through a serialized local discussion. It works across supported terminals,
 harnesses, models, and interfaces without requiring a hosted service or database.
 
+This repository is a generated standalone distribution. The canonical implementation lives in
+[`HiQS-Labs/XYZ-forge`](https://github.com/HiQS-Labs/XYZ-forge) under `skills/agent2agent/`; the
+exact source commit is recorded in `.xyz-canonical-revision`. Changes must land there first and
+then be published one way into this repository.
+
 ## Quick start
 
 ```bash
@@ -27,6 +32,7 @@ requirements, installation details, usage, and verification.
 - [`install.sh`](skills/agent2agent/install.sh) — idempotent skill installer
 - [`agent2agent.py`](skills/agent2agent/scripts/agent2agent.py) — local coordination helper
 - [`test-standalone.sh`](skills/agent2agent/test-standalone.sh) — dependency-free smoke suite
+- [`publish-manifest.tsv`](skills/agent2agent/publish-manifest.tsv) — declared canonical publishing surface
 
 ## License
 

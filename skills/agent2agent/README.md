@@ -47,10 +47,27 @@ keeps one active writer at a time, routes turns among the declared participants,
 `conversation.md` as both the live canvas and raw transcript. New sessions default to an
 `Agent2Agent-Transcripts/` folder beside the canonical repository, outside Git; runtime locks and
 watch markers stay in the session's `runtime/` directory. Set `AGENT2AGENT_HOME` or pass
-`--store` to select another private external location. Legacy `relay-system/` sessions remain
-readable and writable in place.
+`--store` to select another private external location. Persist one user-level default with:
+
+```bash
+"$(git rev-parse --show-toplevel)/skills/agent2agent/scripts/agent2agent.py" configure-store \
+  --path /private/path/to/Agent2Agent-Transcripts
+```
+
+Legacy `relay-system/` sessions remain readable and writable in place. To archive them, copy the
+dated directories to private storage while closed; do not rename them into the live external store
+or delete them automatically. A future migration tool must preserve each raw conversation rather
+than create a second live canvas.
 
 For watch, doorbell, hands-free drive, status, and protocol details, see [SKILL.md](./SKILL.md).
+
+The helper also makes four common long-running-discussion transitions explicit:
+
+- `extend` records an operator follow-up and replaces the live done condition without an ad hoc turn.
+- `close` requires a structured final consensus unless `--trivial` explicitly marks an administrative close.
+- `send`, `extend`, and `close` accept `--check-clean` when a Git handoff claims that work is clean and pushed.
+- `ping` refreshes a participant heartbeat without changing the canonical transcript; `--stale-after`
+  changes the default 30-minute inactive-seat threshold.
 
 ## Verify
 
@@ -59,6 +76,22 @@ Run the skill's dependency-free smoke suite from the repository root:
 ```bash
 bash skills/agent2agent/test-standalone.sh
 ```
+
+## Publish the standalone distribution
+
+XYZ Forge is canonical. `publish-manifest.tsv` declares every file shipped to the standalone
+repository, including its README, CI workflow, tests, metadata, and licenses. Preview by default,
+then publish only from a clean committed canonical revision:
+
+```bash
+bash skills/agent2agent/sync-to-standalone.sh --preview
+bash skills/agent2agent/sync-to-standalone.sh --apply
+bash skills/agent2agent/sync-to-standalone.sh --check
+```
+
+Set `AGENT2AGENT_STANDALONE_REPO` to select another checkout. The publisher refuses undeclared
+tracked destination files, preserves declared executable modes, verifies byte parity, and records
+the exact XYZ commit in `.xyz-canonical-revision`. Standalone changes never sync back automatically.
 
 ## License
 
