@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create and advance serialized XYZ agent2agent discussions."""
+"""Create and advance serialized XYZ AgentChorus discussions (formerly agent2agent)."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Callable, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 
 ID_RE = re.compile(r"^[0-9]{6}$")
@@ -68,7 +68,7 @@ Name any dissent and the evidence that would change the decision. Write `None` w
 
 
 class Agent2AgentError(RuntimeError):
-    """A user-facing agent2agent failure."""
+    """A user-facing AgentChorus failure."""
 
 
 def utc_now() -> str:
@@ -191,6 +191,146 @@ def external_repositories_root(store: Path) -> Path:
     return path
 
 
+# ── Telemetry (Gen 2 Phase 1, #193) ─────────────────────────────────────────────
+# Metadata-only sidecar + store-level index. STRUCTURAL no-content guarantee: emit_telemetry
+# writes only fields present in TELEMETRY_EVENT_FIELDS[event] — anything else is dropped before
+# serialization, so no API path can ever write message bodies into telemetry.
+TELEMETRY_SCHEMA_VERSION = 1
+TELEMETRY_PILOT_WINDOW = ("2026-08-24", "2026-09-08")  # default-ON pilot (EXPERIMENTS.md)
+TELEMETRY_EVENT_FIELDS = {
+    "discussion_started": {"schema", "agents", "timed_watch", "store", "created_at", "subject_sha256"},
+    "turn_written": {"turn", "agent", "next_agent", "message_bytes", "line_count",
+                     "citation_count", "unique_citation_count",
+                     "contains_falsifier_section", "contains_dissent_section"},
+    "close_written": {"close_type", "decision_bytes", "dissent_present",
+                      "falsifier_count", "recommended_actions_count", "turn_count"},
+    "extension_added": {"extension_number", "question_bytes", "done_condition_bytes"},
+    "watch_transition": {"agent", "transition", "rearm_count"},
+    "outcome_recorded": {"result", "note_bytes", "agents_json"},
+}
+_CITATION_RE = None  # compiled lazily; keep the module import-light
+
+
+def telemetry_enabled() -> bool:
+    """Hard env override beats the declared pilot window (data policy, TELEMETRY.md)."""
+    flag = os.environ.get("AGENT2AGENT_TELEMETRY", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    today = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    start, end = TELEMETRY_PILOT_WINDOW
+    return start <= today <= end
+
+
+def telemetry_sidecar(path: Path) -> Path:
+    """telemetry.jsonl lives beside the doorbell markers, never inside conversation.md."""
+    runtime = path.parent / "runtime"
+    return runtime / "telemetry.jsonl"
+
+
+def _citation_counts(text: str) -> Tuple[int, int]:
+    global _CITATION_RE
+    if _CITATION_RE is None:
+        import re
+        _CITATION_RE = re.compile(r"[\w./-]+:\d+")
+    hits = _CITATION_RE.findall(text)
+    return len(hits), len(set(hits))
+
+
+def emit_telemetry(path: Path, event: str, **fields) -> None:
+    if not telemetry_enabled():
+        return
+    allowed = TELEMETRY_EVENT_FIELDS.get(event)
+    if allowed is None:
+        return
+    record = {"event": event, "ts": utc_now(), "schema": TELEMETRY_SCHEMA_VERSION}
+    for key, value in fields.items():
+        if key in allowed and value is not None:
+            record[key] = value
+    sidecar = telemetry_sidecar(path)
+    try:
+        private_mkdir(sidecar.parent)
+        with open(sidecar, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError:
+        pass  # telemetry is a nicety: it must never break the discussion operation
+
+
+def telemetry_index_path(store: Optional[Path]) -> Optional[Path]:
+    resolved = store or ACTIVE_STORE
+    return Path(resolved) / "telemetry_index.db" if resolved else None
+
+
+def index_connect(store: Optional[Path]):
+    import sqlite3
+    db_path = telemetry_index_path(store)
+    if db_path is None:
+        return None, None
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS discussions ("
+        " id TEXT PRIMARY KEY, subject_sha256 TEXT, agents INTEGER, opened_at TEXT,"
+        " closed_at TEXT, close_type TEXT, turn_count INTEGER,"
+        " outcome TEXT, outcome_note TEXT, outcome_agents TEXT)"
+    )
+    conn.execute("CREATE TABLE IF NOT EXISTS outcomes_log ("
+                 " id TEXT, result TEXT, note TEXT, agents TEXT, recorded_at TEXT)")
+    return conn, db_path
+
+
+def index_upsert(store: Optional[Path], discussion_id: str, **columns) -> None:
+    if not telemetry_enabled():
+        return
+    conn, _ = index_connect(store)
+    if conn is None:
+        return
+    try:
+        existing = conn.execute(
+            "SELECT id FROM discussions WHERE id = ?", (discussion_id,)
+        ).fetchone()
+        if existing:
+            sets = ", ".join(f"{k} = ?" for k in columns)
+            conn.execute(
+                f"UPDATE discussions SET {sets} WHERE id = ?",
+                list(columns.values()) + [discussion_id],
+            )
+        else:
+            cols = ["id"] + list(columns)
+            conn.execute(
+                f"INSERT INTO discussions ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                [discussion_id] + list(columns.values()),
+            )
+        conn.commit()
+    except Exception:
+        pass  # index is derived state; the JSONL sidecar is the raw log
+    finally:
+        conn.close()
+
+
+def parse_close_metrics(message: str) -> Dict[str, object]:
+    """Extract only counts/flags from a structured close — never the prose itself."""
+    def section(heading: str) -> str:
+        marker = f"### {heading}"
+        if marker not in message:
+            return ""
+        tail = message.split(marker, 1)[1]
+        parts = tail.split("\n### ")
+        return parts[0]
+    decision = section("Decision")
+    dissent = section("Recorded Dissent / Falsifiers")
+    actions = section("Recommended Next Actions")
+    falsifiers = [ln for ln in dissent.splitlines()
+                  if ln.strip().startswith(("-", "*")) and "none" not in ln.strip().lower()[:6]]
+    numbered = [ln for ln in actions.splitlines() if len(ln) > 1 and ln.strip()[0].isdigit()]
+    return {
+        "decision_bytes": len(decision.strip()),
+        "dissent_present": bool(dissent.strip()) and "none" not in dissent.strip().lower()[:8],
+        "falsifier_count": len(falsifiers),
+        "recommended_actions_count": len(numbered),
+    }
+
+
 def normalize_subject(value: str) -> str:
     subject = " ".join(value.split())
     if not subject:
@@ -291,7 +431,7 @@ def quoted_subject(subject: str) -> str:
 
 def invitation(discussion_id: str, number: int, subject: str, timed_watch: bool = False) -> str:
     text = (
-        f"Join XYZ agent2agent #{discussion_id} as agent number {number_word(number)} "
+        f"Join XYZ AgentChorus #{discussion_id} as agent number {number_word(number)} "
         f"to discuss: {quoted_subject(subject)}"
     )
     if timed_watch:
@@ -403,10 +543,10 @@ def resolve_discussion(root: Path, discussion_id: str, store: Optional[Path] = N
     matches = find_discussions(root, discussion_id, store)
     if not matches:
         locations = f"{store} or {legacy_relay_root(root)}" if store else str(legacy_relay_root(root))
-        raise Agent2AgentError(f"agent2agent #{discussion_id} was not found under {locations}")
+        raise Agent2AgentError(f"AgentChorus discussion #{discussion_id} was not found under {locations}")
     if len(matches) > 1:
         rendered = "\n  ".join(str(path) for path in matches)
-        raise Agent2AgentError(f"agent2agent #{discussion_id} is ambiguous:\n  {rendered}")
+        raise Agent2AgentError(f"AgentChorus discussion #{discussion_id} is ambiguous:\n  {rendered}")
     return matches[0]
 
 
@@ -443,7 +583,7 @@ def render_initial(
     context_packet: str,
 ) -> str:
     roster = " ".join(agent_id(number) for number in range(1, agents + 1))
-    return f"""# XYZ agent2agent #{discussion_id}
+    return f"""# XYZ AgentChorus #{discussion_id}
 
 AGENT2AGENT-ID: {discussion_id}
 SUBJECT: {subject}
@@ -537,7 +677,7 @@ def sync_metadata(path: Path, content: str) -> None:
         })
         atomic_write(metadata_path, json.dumps(metadata, indent=2, sort_keys=True) + "\n")
     except (Agent2AgentError, OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        print(f"agent2agent: warning: conversation advanced but metadata sync failed: {exc}", file=sys.stderr)
+        print(f"agent-chorus: warning: conversation advanced but metadata sync failed: {exc}", file=sys.stderr)
 
 
 def create_discussion(
@@ -562,14 +702,14 @@ def create_discussion(
         for candidate in id_candidates(explicit_id):
             if find_discussions(root, candidate, store):
                 if explicit_id:
-                    raise Agent2AgentError(f"agent2agent #{candidate} already exists")
+                    raise Agent2AgentError(f"AgentChorus discussion #{candidate} already exists")
                 continue
             candidate_dir = dated / f"{candidate}--{slugify(normalized)}"
             try:
                 candidate_dir.mkdir(mode=0o700)
             except FileExistsError:
                 if explicit_id:
-                    raise Agent2AgentError(f"agent2agent #{candidate} already exists")
+                    raise Agent2AgentError(f"AgentChorus discussion #{candidate} already exists")
                 continue
             os.chmod(candidate_dir, 0o700)
             discussion_id, session_dir = candidate, candidate_dir
@@ -612,6 +752,13 @@ def create_discussion(
     finally:
         fcntl.flock(allocation.fileno(), fcntl.LOCK_UN)
         allocation.close()
+    emit_telemetry(
+        path, "discussion_started", agents=agents, timed_watch=timed_watch,
+        store=str(store), created_at=timestamp,
+        subject_sha256=hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16],
+    )
+    index_upsert(store, discussion_id, subject_sha256=hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16],
+                 agents=agents, opened_at=timestamp)
     return discussion_id, path
 
 
@@ -946,7 +1093,7 @@ def report_discussion_status(root: Path, discussion_id: str, stale_after: float)
     path = resolve_discussion(root, discussion_id)
     content = read_discussion(path)
     roster = parse_roster(content)
-    print(f"XYZ agent2agent #{discussion_id}")
+    print(f"XYZ AgentChorus #{discussion_id}")
     print(f"Relay file: {path}")
     print(f"Subject: {field(content, 'SUBJECT')}")
     print(f"STATUS: {field(content, 'STATUS')}")
@@ -972,7 +1119,7 @@ def ping_discussion(root: Path, discussion_id: str, number: int) -> Path:
     content = read_discussion(path)
     member = validate_member(content, number)
     if field(content, "STATUS").lower() == "closed":
-        raise Agent2AgentError(f"agent2agent #{discussion_id} is closed")
+        raise Agent2AgentError(f"AgentChorus discussion #{discussion_id} is closed")
     touch_watch_sidecar(path, number)
     print(f"HEARTBEAT: refreshed {member}")
     return path
@@ -982,7 +1129,7 @@ def watch_discussion(
     root: Path, discussion_id: str, number: int, interval: float, timeout: float
 ) -> int:
     path = resolve_discussion(root, discussion_id)
-    print(f"Watching XYZ agent2agent #{discussion_id} as {agent_id(number)}")
+    print(f"Watching XYZ AgentChorus #{discussion_id} as {agent_id(number)}")
     print(f"Relay file: {path}")
     touch_watch_sidecar(path, number)
     _, _, _, decision = wait_for_turn(
@@ -1010,12 +1157,12 @@ def watch_discussion(
 
 
 def turn_prompt(discussion_id: str, number: int, path: Path, subject: str) -> str:
-    return f"""Join XYZ agent2agent #{discussion_id} as agent number {number_word(number)} to discuss: {quoted_subject(subject)}
+    return f"""Join XYZ AgentChorus #{discussion_id} as agent number {number_word(number)} to discuss: {quoted_subject(subject)}
 
 It is now your turn. Read the complete discussion at:
 {path}
 
-Respond to the discussion, then use the agent2agent helper's send or close command. Do not edit the
+Respond to the discussion, then use the AgentChorus helper's send or close command. Do not edit the
 relay file directly. Route NEXT to exactly one other roster member unless you close the discussion.
 """
 
@@ -1080,7 +1227,7 @@ def drive_discussion(
     completed = 0
     deadline = time.monotonic() + timeout
     with DriveLock(path, member):
-        print(f"Driving XYZ agent2agent #{discussion_id} as {member}")
+        print(f"Driving XYZ AgentChorus #{discussion_id} as {member}")
         print(f"Relay file: {path}")
         while completed < max_turns:
             remaining = max(0.0, deadline - time.monotonic())
@@ -1243,7 +1390,7 @@ def append_turn(
         roster = parse_roster(content)
         status = field(content, "STATUS")
         if status.lower() == "closed":
-            raise Agent2AgentError(f"agent2agent #{discussion_id} is closed")
+            raise Agent2AgentError(f"AgentChorus discussion #{discussion_id} is closed")
         current = field(content, "NEXT")
         if current != member:
             raise Agent2AgentError(f"out of turn: NEXT is {current}, not {member}")
@@ -1279,18 +1426,176 @@ def append_turn(
         updated = updated.rstrip() + f"\n\n### Turn {turn} — {member} — {timestamp}\n\n{message}\n"
         atomic_write(path, updated)
         sync_metadata(path, updated)
+    citations, unique_citations = _citation_counts(message)
+    if telemetry_enabled():
+        emit_telemetry(
+            path, "turn_written", turn=turn, agent=member, next_agent=next_member,
+            message_bytes=len(message.encode("utf-8")), line_count=message.count("\n") + 1,
+            citation_count=citations, unique_citation_count=unique_citations,
+            contains_falsifier_section="Falsifier" in message,
+            contains_dissent_section="Dissent" in message,
+        )
+        store_for_index = ACTIVE_STORE
+        if close:
+            metrics = parse_close_metrics(message)
+            emit_telemetry(path, "close_written", close_type="substantive", turn_count=turn, **metrics)
+            try:
+                report = {"discussion_id": discussion_id, "turn_count": turn, **metrics}
+                runtime = path.parent / "runtime"
+                private_mkdir(runtime)
+                atomic_write(runtime / "close_report.json", json.dumps(report, indent=2, sort_keys=True) + "\n")
+            except OSError:
+                pass
+            index_upsert(store_for_index, discussion_id, closed_at=timestamp,
+                         close_type="substantive", turn_count=turn)
+        if extension:
+            raw_ext = optional_field(updated, "EXTENSIONS", "0")
+            emit_telemetry(path, "extension_added", extension_number=raw_ext,
+                           question_bytes=len(message.encode("utf-8")), done_condition_bytes=0)
     return path, turn, next_member, field(updated, "SUBJECT")
+
+
+# ── Telemetry commands (Gen 2 Phase 1) ──────────────────────────────────────────
+
+def telemetry_audit(discussion_id: str) -> int:
+    """Comparator negative control: prove the sidecar carries ZERO transcript content.
+
+    Deterministic check: no string field value of any event (length >= 12) may appear
+    verbatim inside conversation.md. Exits 1 naming the leak on any hit.
+    """
+    path = resolve_discussion(normalize_root(os.environ.get("AGENT2AGENT_ROOT")), discussion_id)
+    sidecar = telemetry_sidecar(path)
+    if not sidecar.is_file():
+        print(f"audit: no telemetry sidecar for #{discussion_id} (telemetry off or no events)")
+        return 1
+    transcript = path.read_text(encoding="utf-8")
+    iso8601 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+    pathlike = re.compile(r"^[/~.]?[-\w/.*%]+$")
+    leaks = []
+    for line in sidecar.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        for key, value in event.items():
+            if not isinstance(value, str) or len(value) < 12:
+                continue
+            # timestamps and filesystem paths are allowed metadata that may legitimately
+            # coincide with transcript headers; the audit hunts prose/content leakage.
+            if key in ("ts", "created_at", "closed_at", "recorded_at", "store"):
+                continue
+            if iso8601.match(value) or pathlike.match(value):
+                continue
+            if value in transcript:
+                leaks.append(f"{event.get('event')}.{key}")
+    if leaks:
+        print(f"audit FAIL: transcript content found in telemetry fields: {sorted(set(leaks))}")
+        return 1
+    print(f"audit PASS: zero transcript content in {sidecar} "
+          f"(structural allowlist held; checked every string field >= 12 chars)")
+    return 0
+
+
+def command_telemetry(args: argparse.Namespace) -> int:
+    action = args.telemetry_action
+    if action == "status":
+        flag = os.environ.get("AGENT2AGENT_TELEMETRY", "")
+        enabled = telemetry_enabled()
+        window = TELEMETRY_PILOT_WINDOW
+        print(f"telemetry enabled: {enabled}")
+        print(f"AGENT2AGENT_TELEMETRY env: {flag!r} ({'hard override active' if flag else 'unset — pilot window decides'})")
+        print(f"pilot window (default-ON): {window[0]} .. {window[1]}")
+        print(f"schema version: {TELEMETRY_SCHEMA_VERSION}")
+        db = telemetry_index_path(ACTIVE_STORE)
+        print(f"index: {db} ({'present' if db and db.is_file() else 'not created yet'})")
+        print("policy: metadata-only; field allowlist per event; hard override AGENT2AGENT_TELEMETRY=0")
+        return 0
+    if action == "purge":
+        removed = []
+        store = ACTIVE_STORE
+        if store and store.is_dir():
+            for sidecar in store.rglob("telemetry.jsonl"):
+                sidecar.unlink()
+                removed.append(str(sidecar))
+            for report in store.rglob("close_report.json"):
+                report.unlink()
+                removed.append(str(report))
+            db = telemetry_index_path(store)
+            if db and db.is_file():
+                db.unlink()
+                removed.append(str(db))
+        print(f"purged {len(removed)} telemetry artifacts under {store}")
+        for item in removed:
+            print(f"  - {item}")
+        return 0
+    if action == "aggregate":
+        conn, db = index_connect(ACTIVE_STORE)
+        if conn is None:
+            print("telemetry aggregate: no store configured", file=sys.stderr)
+            return 2
+        rows = conn.execute(
+            "SELECT id, agents, opened_at, closed_at, close_type, turn_count, outcome"
+            " FROM discussions ORDER BY opened_at"
+        ).fetchall()
+        conn.close()
+        closed = [r for r in rows if r[3]]
+        with_outcome = [r for r in rows if r[6]]
+        print(f"discussions: {len(rows)} (closed: {len(closed)}, outcome recorded: {len(with_outcome)})")
+        for r in rows:
+            print(f"  #{r[0]} agents={r[1]} opened={r[2]} closed={r[3] or '-'} "
+                  f"type={r[4] or '-'} turns={r[5] or 0} outcome={r[6] or '-'}")
+        return 0
+    if action == "audit":
+        return telemetry_audit(args.id)
+    raise Agent2AgentError(f"unknown telemetry action: {action}")
+
+
+def command_outcome(args: argparse.Namespace) -> int:
+    allowed = {"implemented", "partial", "not_implemented", "superseded"}
+    if args.result not in allowed:
+        raise Agent2AgentError(f"--result must be one of {sorted(allowed)}")
+    root = normalize_root(args.root)
+    path = resolve_discussion(root, args.id)
+    content = read_discussion(path)
+    if field(content, "STATUS").lower() != "closed":
+        raise Agent2AgentError(f"outcome requires a closed discussion (#{args.id} is still open)")
+    agents_meta = {}
+    for pair in args.agent or []:
+        seat, _, model = pair.partition("=")
+        if not model:
+            raise Agent2AgentError("--agent expects SEAT=MODEL, e.g. --agent 2=glm-5.3")
+        agents_meta[seat] = model
+    roster_size = len(parse_roster(content))
+    emit_telemetry(path, "outcome_recorded", result=args.result,
+                   note_bytes=len((args.note or "").encode("utf-8")),
+                   agents_json=json.dumps(agents_meta, sort_keys=True))
+    index_upsert(ACTIVE_STORE, args.id, outcome=args.result,
+                 outcome_note=(args.note or "")[:200], outcome_agents=json.dumps(agents_meta, sort_keys=True))
+    conn, _ = index_connect(ACTIVE_STORE)
+    if conn is not None:
+        try:
+            conn.execute(
+                "INSERT INTO outcomes_log (id, result, note, agents, recorded_at) VALUES (?,?,?,?,?)",
+                (args.id, args.result, (args.note or "")[:200],
+                 json.dumps(agents_meta, sort_keys=True), utc_now()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    print(f"Outcome recorded for #{args.id}: {args.result}"
+          + (f" ({len(agents_meta)}/{roster_size} seats attributed)" if agents_meta else ""))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="agent2agent",
+        prog="agent-chorus",
         description="Create or advance a serialized XYZ discussion shared by two or more agent sessions.",
     )
     parser.add_argument("--root", help="XYZ harness root; defaults to AGENT2AGENT_ROOT or this skill's repository")
     parser.add_argument(
         "--store",
-        help="external Agent2Agent transcript store; defaults to AGENT2AGENT_HOME, user config, or a sibling Agent2Agent-Transcripts directory",
+        help="external AgentChorus transcript store (directory name Agent2Agent-Transcripts retained for compatibility); defaults to AGENT2AGENT_HOME, user config, or a sibling Agent2Agent-Transcripts directory",
     )
     parser.add_argument(
         "--stale-after", type=positive_interval,
@@ -1396,7 +1701,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum turns this process may dispatch (default: 6)",
     )
     drive.add_argument("turn_command", nargs=argparse.REMAINDER, help="command to run on each owned turn")
+    outcome = commands.add_parser(
+        "outcome", help="record a closed discussion's real-world result (read-only after closure)",
+    )
+    outcome.add_argument("--id", required=True)
+    outcome.add_argument("--result", required=True,
+                         help="implemented | partial | not_implemented | superseded")
+    outcome.add_argument("--note", help="short operator note (truncated to 200 chars in the index)")
+    outcome.add_argument("--agent", action="append",
+                         help="SEAT=MODEL attribution, repeatable (e.g. --agent 2=glm-5.3)")
+
+    telemetry = commands.add_parser(
+        "telemetry", help="telemetry sidecar + index operations (status | purge | aggregate | audit)",
+    )
+    telemetry.add_argument("telemetry_action", choices=["status", "purge", "aggregate", "audit"])
+    telemetry.add_argument("--id", help="discussion id (audit)")
+
     return parser
+
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1422,7 +1744,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 ACTIVE_STORE,
             )
             subject = normalize_subject(args.subject)
-            print(f"Created XYZ agent2agent #{discussion_id}")
+            print(f"Created XYZ AgentChorus #{discussion_id}")
             print(f"Relay file: {path}")
             for number in range(2, args.agents + 1):
                 print(invitation(discussion_id, number, subject, args.timed_watch))
@@ -1432,7 +1754,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             path, subject, next_member, decision = join_discussion(
                 root, args.id, args.agent, args.expect_subject
             )
-            print(f"XYZ agent2agent #{args.id}")
+            print(f"XYZ AgentChorus #{args.id}")
             print(f"Relay file: {path}")
             print(f"Subject: {subject}")
             print(f"You are: {agent_id(args.agent)}")
@@ -1470,7 +1792,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 validate_structured_close(message)
             receipt = verify_git_handoff(root) if args.check_clean else None
             path, turn, _, _ = append_turn(root, args.id, args.agent, message, None, True)
-            print(f"Closed XYZ agent2agent #{args.id} at turn {turn}")
+            print(f"Closed XYZ AgentChorus #{args.id} at turn {turn}")
             print(f"Relay file: {path}")
             if receipt:
                 print(f"VERIFIED-GIT: {receipt}")
@@ -1488,6 +1810,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"VERIFIED-GIT: {receipt}")
             report_peer_doorbells(path, read_discussion(path), args.agent, stale_after)
             print(invitation(args.id, args.next_agent, subject, timed_watch_enabled(read_discussion(path))))
+        elif args.command == "outcome":
+            return command_outcome(args)
+        elif args.command == "telemetry":
+            return command_telemetry(args)
         elif args.command == "drive":
             if args.max_turns < 1:
                 raise Agent2AgentError("--max-turns must be at least one")
@@ -1498,10 +1824,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             raise Agent2AgentError(f"unsupported command: {args.command}")
     except KeyboardInterrupt:
-        print("agent2agent: interrupted", file=sys.stderr)
+        print("agent-chorus: interrupted", file=sys.stderr)
         return 130
     except Agent2AgentError as exc:
-        print(f"agent2agent: {exc}", file=sys.stderr)
+        print(f"agent-chorus: {exc}", file=sys.stderr)
         return 2
     return 0
 

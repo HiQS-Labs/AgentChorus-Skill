@@ -1,15 +1,17 @@
-# Agent2Agent
+# AgentChorus
 
-Agent2Agent lets two or more supported agent sessions hold a serialized, local discussion about the
-same repository. Install the lightweight skill package, ask one agent to start a discussion,
+AgentChorus (formerly Agent2Agent — renamed to avoid a trademark conflict with the Linux
+Foundation's Agent2Agent protocol project) lets two or more supported agent sessions hold a
+serialized, local discussion about the same repository. Install the lightweight skill package, ask one agent to start a discussion,
 and paste only its six-digit invitation into the other sessions. The starting agent prepares and
 embeds the goal, scope, evidence, constraints, questions, and done condition as Turn 1.
 
 > **Note:** This README ships in two repositories: the canonical
 > [XYZ Forge](https://github.com/HiQS-Suite/XYZ-forge) repository and the standalone
-> [Agent2Agent-Skill](https://github.com/HiQS-Labs/Agent2Agent-Skill) distribution. The
+> [AgentChorus-Skill](https://github.com/HiQS-Labs/AgentChorus-Skill) distribution. The
 > instructions below apply to whichever repository you cloned; edits must land in XYZ Forge
-> first and are published one way into the standalone repository.
+> first and are published one way into the standalone repository. Project website:
+> [agentchorus.dev](https://agentchorus.dev).
 
 ## Requirements
 
@@ -22,7 +24,7 @@ embeds the goal, scope, evidence, constraints, questions, and done condition as 
 From the repository root, run:
 
 ```bash
-bash skills/agent2agent/install.sh
+bash skills/agent-chorus/install.sh
 ```
 
 The idempotent installer symlinks this repo-backed skill into the standard skill directories for
@@ -37,7 +39,7 @@ Python helper manages the local discussion protocol. No hosted service or databa
 Ask your first agent in plain language, for example:
 
 ```text
-Start an Agent2Agent session with Codex to review the new authentication protocol.
+Start an AgentChorus session with Codex to review the new authentication protocol.
 ```
 
 The agent infers the intent from the recent conversation, asks focused clarification only when
@@ -45,10 +47,10 @@ needed, prepares the context packet, creates the discussion, and returns one inv
 additional participant:
 
 ```text
-Join XYZ agent2agent #123456 as agent number two to discuss: "Review the new authentication protocol"
+Join XYZ AgentChorus #123456 as agent number two to discuss: "Review the new authentication protocol"
 ```
 
-Paste each invitation—without a second context block—into its intended agent session. Agent2Agent
+Paste each invitation—without a second context block—into its intended agent session. AgentChorus
 keeps one active writer at a time, routes turns among the declared participants, and uses one
 `conversation.md` as both the live canvas and raw transcript. New sessions default to an
 `Agent2Agent-Transcripts/` folder beside the canonical repository, outside Git; runtime locks and
@@ -56,7 +58,7 @@ watch markers stay in the session's `runtime/` directory. Set `AGENT2AGENT_HOME`
 `--store` to select another private external location. Persist one user-level default with:
 
 ```bash
-"$(git rev-parse --show-toplevel)/skills/agent2agent/scripts/agent2agent.py" configure-store \
+"$(git rev-parse --show-toplevel)/skills/agent-chorus/scripts/agent_chorus.py" configure-store \
   --path /private/path/to/Agent2Agent-Transcripts
 ```
 
@@ -80,7 +82,7 @@ The helper also makes four common long-running-discussion transitions explicit:
 Run the skill's dependency-free smoke suite from the repository root:
 
 ```bash
-bash skills/agent2agent/test-standalone.sh
+bash skills/agent-chorus/test-standalone.sh
 ```
 
 ## Publish the standalone distribution
@@ -90,9 +92,9 @@ repository, including its README, CI workflow, tests, metadata, and licenses. Pr
 then publish only from a clean committed canonical revision:
 
 ```bash
-bash skills/agent2agent/sync-to-standalone.sh --preview
-bash skills/agent2agent/sync-to-standalone.sh --apply
-bash skills/agent2agent/sync-to-standalone.sh --check
+bash skills/agent-chorus/sync-to-standalone.sh --preview
+bash skills/agent-chorus/sync-to-standalone.sh --apply
+bash skills/agent-chorus/sync-to-standalone.sh --check
 ```
 
 Set `AGENT2AGENT_STANDALONE_REPO` to select another checkout. The publisher refuses undeclared
@@ -101,5 +103,5 @@ the exact XYZ commit in `.xyz-canonical-revision`. Standalone changes never sync
 
 ## License
 
-- Agent2Agent inherits this repository's default [GNU AGPL-3.0-only license](../../LICENSE); optional proprietary use is described in the [commercial license guide](../../LICENSE-COMMERCIAL.md).
+- AgentChorus inherits this repository's default [GNU AGPL-3.0-only license](../../LICENSE); optional proprietary use is described in the [commercial license guide](../../LICENSE-COMMERCIAL.md).
 - The software is provided **as is**, without warranty of any kind, to the extent permitted by the governing license and applicable law.
