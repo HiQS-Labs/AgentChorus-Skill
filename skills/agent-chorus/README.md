@@ -7,7 +7,7 @@ and paste only its six-digit invitation into the other sessions. The starting ag
 embeds the goal, scope, evidence, constraints, questions, and done condition as Turn 1.
 
 > **Note:** This README ships in two repositories: the canonical
-> [XYZ Forge](https://github.com/HiQS-Suite/XYZ-forge) repository and the standalone
+> [XYZ Forge](https://github.com/HiQS-Labs/XYZ-forge) repository and the standalone
 > [AgentChorus-Skill](https://github.com/HiQS-Labs/AgentChorus-Skill) distribution. The
 > instructions below apply to whichever repository you cloned; edits must land in XYZ Forge
 > first and are published one way into the standalone repository. Project website:
@@ -16,7 +16,10 @@ embeds the goal, scope, evidence, constraints, questions, and done condition as 
 ## Requirements
 
 - A local clone of this repository that every participating agent can access
-- Python 3, Bash, and Git
+- Python 3 (standard library only), Bash, and Git, on macOS or Linux — the helper uses `fcntl`
+  locking and is not supported on Windows. If a harness's shell resolves `python3` to an
+  interpreter that fails with `No module named 'encodings'`, run the helper with an explicit
+  interpreter such as `/usr/bin/python3`.
 - A supported skill-aware agent harness, such as Claude Code, Codex, or a supported Gemini surface
 
 ## Install
@@ -24,12 +27,24 @@ embeds the goal, scope, evidence, constraints, questions, and done condition as 
 From the repository root, run:
 
 ```bash
-bash skills/agent-chorus/install.sh
+bash skills/2-daily/agent-chorus/install.sh
 ```
 
 The idempotent installer symlinks this repo-backed skill into the standard skill directories for
 Claude Code, Codex, Gemini Config, Gemini Antigravity, and Gemini Antigravity CLI. Restart or open a
 new agent session if the harness does not discover newly installed skills automatically.
+
+A symlink tracks this checkout: a `git pull` changes the installed skill immediately. To pin a
+version instead — or to install for one project only — copy the folder and record the source
+commit:
+
+```bash
+cp -R skills/2-daily/agent-chorus ~/.claude/skills/agent-chorus        # or <project>/.claude/skills/
+git rev-parse --short HEAD > ~/.claude/skills/agent-chorus/INSTALLED-FROM.txt
+```
+
+A copied skill resolves its helper from its own directory (see `SKILL.md`, "Locating the helper");
+pass `--root` or set `AGENT2AGENT_ROOT` to the repository under discussion.
 
 The installation is intentionally small: `SKILL.md` contains the agent instructions and the bundled
 Python helper manages the local discussion protocol. No hosted service or database is required.
@@ -47,10 +62,12 @@ needed, prepares the context packet, creates the discussion, and returns one inv
 additional participant:
 
 ```text
-Join XYZ AgentChorus #123456 as agent number two to discuss: "Review the new authentication protocol"
+Join XYZ AgentChorus #123456 as agent number two to discuss: "Review the new authentication protocol" — use the agent-chorus skill
 ```
 
-Paste each invitation—without a second context block—into its intended agent session. AgentChorus
+Paste each invitation—without a second context block—into its intended agent session. The trailing
+clause is what makes every harness load the skill; a bare "Join…" line was observed to be answered as
+ordinary chat on one harness. AgentChorus
 keeps one active writer at a time, routes turns among the declared participants, and uses one
 `conversation.md` as both the live canvas and raw transcript. New sessions default to an
 `Agent2Agent-Transcripts/` folder beside the canonical repository, outside Git; runtime locks and
@@ -58,7 +75,7 @@ watch markers stay in the session's `runtime/` directory. Set `AGENT2AGENT_HOME`
 `--store` to select another private external location. Persist one user-level default with:
 
 ```bash
-"$(git rev-parse --show-toplevel)/skills/agent-chorus/scripts/agent_chorus.py" configure-store \
+"$(git rev-parse --show-toplevel)/skills/2-daily/agent-chorus/scripts/agent_chorus.py" configure-store \
   --path /private/path/to/Agent2Agent-Transcripts
 ```
 
@@ -76,13 +93,16 @@ The helper also makes four common long-running-discussion transitions explicit:
 - `send`, `extend`, and `close` accept `--check-clean` when a Git handoff claims that work is clean and pushed.
 - `ping` refreshes a participant heartbeat without changing the canonical transcript; `--stale-after`
   changes the default 30-minute inactive-seat threshold.
+- `send` prints a `RECEIPT:` line and each peer's last-written turn; `close` refuses an unedited
+  template and warns before closing over a seat that never wrote or has not answered the latest turn.
+- `join --model <name>` records per-seat model identity in telemetry; every `join` is now a telemetry event.
 
 ## Verify
 
 Run the skill's dependency-free smoke suite from the repository root:
 
 ```bash
-bash skills/agent-chorus/test-standalone.sh
+bash skills/2-daily/agent-chorus/test-standalone.sh
 ```
 
 ## Publish the standalone distribution
@@ -92,9 +112,9 @@ repository, including its README, CI workflow, tests, metadata, and licenses. Pr
 then publish only from a clean committed canonical revision:
 
 ```bash
-bash skills/agent-chorus/sync-to-standalone.sh --preview
-bash skills/agent-chorus/sync-to-standalone.sh --apply
-bash skills/agent-chorus/sync-to-standalone.sh --check
+bash skills/2-daily/agent-chorus/sync-to-standalone.sh --preview
+bash skills/2-daily/agent-chorus/sync-to-standalone.sh --apply
+bash skills/2-daily/agent-chorus/sync-to-standalone.sh --check
 ```
 
 Set `AGENT2AGENT_STANDALONE_REPO` to select another checkout. The publisher refuses undeclared
@@ -103,5 +123,5 @@ the exact XYZ commit in `.xyz-canonical-revision`. Standalone changes never sync
 
 ## License
 
-- AgentChorus inherits this repository's default [GNU AGPL-3.0-only license](../../LICENSE); optional proprietary use is described in the [commercial license guide](../../LICENSE-COMMERCIAL.md).
+- AgentChorus inherits this repository's default [GNU AGPL-3.0-only license](https://github.com/HiQS-Labs/XYZ-forge/blob/development/LICENSE); optional proprietary use is described in the [commercial license guide](https://github.com/HiQS-Labs/XYZ-forge/blob/development/LICENSE-COMMERCIAL.md).
 - The software is provided **as is**, without warranty of any kind, to the extent permitted by the governing license and applicable law.

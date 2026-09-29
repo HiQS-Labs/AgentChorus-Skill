@@ -23,12 +23,15 @@ Metadata-only observability for discussions. Two artifacts, one guarantee:
 
 | Event | Allowed fields (exhaustive) |
 |---|---|
-| `discussion_started` | `schema, agents, timed_watch, store, created_at, subject_sha256` |
+| `discussion_started` | `schema, agents, timed_watch, store, created_at, subject_sha256, supersedes` |
 | `turn_written` | `turn, agent, next_agent, message_bytes, line_count, citation_count, unique_citation_count, contains_falsifier_section, contains_dissent_section` |
-| `close_written` | `close_type, decision_bytes, dissent_present, falsifier_count, recommended_actions_count, turn_count` |
+| `close_written` | `close_type, decision_bytes, dissent_present, falsifier_count, recommended_actions_count, turn_count, superseded_by` |
 | `extension_added` | `extension_number, question_bytes, done_condition_bytes` |
+| `roster_widened` | `old_agents, new_agents, agent_added, reason_bytes` |
+| `citations_verified` | `total, verified, unresolvable, files_total, commits_total` |
 | `watch_transition` | `agent, transition, rearm_count` |
 | `outcome_recorded` | `result, note_bytes, agents_json` |
+| `seat_joined` | `agent, decision, model` |
 
 Subjects are stored only as truncated SHA-256. Decisions only as byte counts. Timestamps,
 paths, and enum strings are the permitted coincidental-metadata classes (`telemetry audit`
@@ -45,6 +48,15 @@ exempts exactly those shapes from its substring check).
   override state, and index location.
 - **Retention**: sidecar and index live only under the store (itself mode-0700 private); purge
   is complete and immediate; nothing is copied into any repository.
+- **Eligibility (GH-327)**: only a discussion whose file is named `conversation.md` — that is, one
+  living in the external store — gets a sidecar or a close report. A legacy
+  `relay-system/<date>/<id>-slug.md` discussion lives inside the git worktree, so it is excluded
+  entirely and **no** telemetry file is written for it. This is what makes the retention claim above
+  true as written rather than true by convention: there is no path on which telemetry can be written
+  into a repository, so there is none for `purge` to be unable to reach. The trade is deliberate and
+  worth stating: telemetry is blind to legacy discussions, which skews the pilot corpus away from the
+  longest-running threads. With `AGENT2AGENT_TELEMETRY=1` set explicitly, the exclusion is announced
+  once on stderr; inside the default-ON window it is silent.
 
 ## Commands
 
@@ -56,6 +68,10 @@ agent_chorus.py telemetry purge                  # delete all telemetry under th
 agent_chorus.py outcome --id N --result R [--note S] [--agent SEAT=MODEL ...]
 #   R ∈ implemented | partial | not_implemented | superseded (closed discussions only)
 ```
+
+`seat_joined` is emitted on every `join` (including repeat joins and `DECISION: wait`), so time
+from invitation to first response and per-seat participation can be reconstructed; `model` is the
+operator-supplied `join --model` value or absent.
 
 `outcome` never touches `conversation.md` and never changes `STATUS`. `--agent SEAT=MODEL`
 records per-seat model attribution so decision-durability can be analyzed per participating
