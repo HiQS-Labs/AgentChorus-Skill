@@ -1,0 +1,13 @@
+.github/workflows/ci.yml
+.gitignore
+LICENSE
+LICENSE-COMMERCIAL.md
+README.md
+skills/agent-chorus/EXPERIMENTS.md
+skills/agent-chorus/README.md
+skills/agent-chorus/SKILL.md
+skills/agent-chorus/TELEMETRY.md
+skills/agent-chorus/agents/openai.yaml
+skills/agent-chorus/install.sh
+skills/agent-chorus/scripts/agent_chorus.py
+skills/agent-chorus/test-standalone.sh
